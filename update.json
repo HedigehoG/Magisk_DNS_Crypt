@@ -1,0 +1,6 @@
+{
+  "version": "1.0",
+  "versionCode": 100,
+  "zipUrl": "https://github.com/HedigehoG/Magisk_DNS_Crypt/releases/download/v1.0/magisk_dns_crypt-v1.0.zip",
+  "changelog": "Переход на dnsproxy, поддержка Action и автообновление SPKI."
+}
