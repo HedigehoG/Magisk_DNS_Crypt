@@ -1,0 +1,1 @@
+# Magisk_DNS_Crypt
