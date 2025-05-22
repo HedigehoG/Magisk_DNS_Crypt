@@ -1,0 +1,77 @@
+name: Build and Release Magisk Module
+
+on:
+  push:
+    branches:
+      - main  # Or master, depending on your default branch
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Get module version from module.prop
+      id: get_version
+      run: |
+        MODULE_VERSION=$(grep '^version=' module.prop | cut -d'=' -f2 | tr -d '\r')
+        MODULE_ID=$(grep '^id=' module.prop | cut -d'=' -f2 | tr -d '\r')
+        echo "MODULE_VERSION=$MODULE_VERSION" >> "$GITHUB_OUTPUT"
+        echo "MODULE_ID=$MODULE_ID" >> "$GITHUB_OUTPUT"
+      # This part reads the version and ID from module.prop, so you only update it in one place.
+
+    - name: Prepare module directory for packaging
+      run: |
+        mkdir -p module_package
+        cp -r ./* module_package/
+        # Remove any files that shouldn't be in the final module ZIP
+        rm -rf module_package/.git module_package/.github module_package/README.md module_package/LICENSE
+
+    - name: Create Magisk module ZIP
+      run: |
+        # Magisk modules are just ZIP files.
+        # Ensure the customize.sh and service.sh have correct EOL (LF)
+        # Use zip command to create the archive.
+        cd module_package
+        zip -r "../${{ steps.get_version.outputs.MODULE_ID }}-${{ steps.get_version.outputs.MODULE_VERSION }}.zip" ./*
+
+    - name: Upload module artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: magisk-module
+        path: "${{ steps.get_version.outputs.MODULE_ID }}-${{ steps.get_version.outputs.MODULE_VERSION }}.zip"
+
+    - name: Create GitHub Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ steps.get_version.outputs.MODULE_VERSION }}
+        release_name: Release v${{ steps.get_version.outputs.MODULE_VERSION }}
+        body: |
+          New release of My DoH Client Magisk module (v${{ steps.get_version.outputs.MODULE_VERSION }})
+          
+          **Changes:**
+          * Auto-downloaded dnsproxy binary for your device architecture.
+          * Configured dnsproxy to listen on 127.0.0.1:5353
+          
+          **Installation:**
+          1. Download the attached `.zip` file.
+          2. Install it via Magisk Manager.
+          3. Manually set your Android DNS to `127.0.0.1:5353`.
+        draft: false
+        prerelease: false
+
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: "./${{ steps.get_version.outputs.MODULE_ID }}-${{ steps.get_version.outputs.MODULE_VERSION }}.zip"
+        asset_name: "${{ steps.get_version.outputs.MODULE_ID }}-${{ steps.get_version.outputs.MODULE_VERSION }}.zip"
+        asset_content_type: application/zip

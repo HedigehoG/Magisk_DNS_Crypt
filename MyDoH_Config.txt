@@ -1,0 +1,2 @@
+DNS_CHOICE=4
+CUSTOM_DNS_HOST=https://hedigehog.ddns.net/dns-query
