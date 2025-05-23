@@ -25,17 +25,17 @@ jobs:
 
     - name: Prepare module directory for packaging
       run: |
-        mkdir -p module_package
-        cp -r ./* module_package/
+        mkdir -p tmp_package
+        cp -r ./* tmp_package/
         # Remove any files that shouldn't be in the final module ZIP
-        rm -rf module_package/.git module_package/.github module_package/README.md module_package/LICENSE
+        rm -rf tmp_package/.git tmp_package/.github tmp_package/README.md tmp_package/LICENSE
 
     - name: Create Magisk module ZIP
       run: |
         # Magisk modules are just ZIP files.
         # Ensure the customize.sh and service.sh have correct EOL (LF)
         # Use zip command to create the archive.
-        cd module_package
+        cd tmp_package
         zip -r "../${{ steps.get_version.outputs.MODULE_ID }}-${{ steps.get_version.outputs.MODULE_VERSION }}.zip" ./*
 
     - name: Upload module artifact

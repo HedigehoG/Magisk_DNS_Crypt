@@ -1,10 +1,6 @@
 #!/system/bin/sh
-
-HOST=$(grep HOST "$MODDIR/dnsproxy.conf" | awk -F' = ' '{print $2}') 
-IP=$(grep IP "$MODDIR/dnsproxy.conf" | awk -F' = ' '{print $2}') |          # Можно оставить пустым для stamp без IP
-PORT="443"
-PATH="/dns-query"
-
+# Обновление DNS stamp для dnsproxy 
+# в разработке
 MODDIR=${0%/*}
 CONF="$MODDIR/dns_serv.conf"
 
@@ -25,9 +21,9 @@ echo "[+] SPKI Hash: $HASH"
 
 # Сборка нового stamp (с IP или без)
 if [ -n "$IP" ]; then
-  STAMP="sdns://Agc${HASH}Dd3cuOTEuNjkuMTg0ABFoZWRpZ2Vob2cuZGRucy5uZXQKL2Rucy1xdWVyeQ"
+  STAMP="sdns://Agc${HASH}"
 else
-  STAMP="sdns://Agc${HASH}ABFoZWRpZ2Vob2cuZGRucy5uZXQKL2Rucy1xdWVyeQ"
+  STAMP="sdns://Agc${HASH}"
 fi
 
 echo "[*] Обновляем dnsproxy.conf..."

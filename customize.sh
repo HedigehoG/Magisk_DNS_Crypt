@@ -7,9 +7,9 @@
 DNSPROXY_VERSION="v0.75.5" # Current stable version
 DNSPROXY_BASE_URL="https://github.com/AdguardTeam/dnsproxy/releases/download/$DNSPROXY_VERSION"
 
-MODDIR=${0%/*}
-ARCH=$(getprop ro.product.cpu.abi)
+MODDIR=${MODPATH:-$1}
 BIN_DIR="$MODDIR/system/bin"
+ETC_DIR="$MODDIR/system/etc"
 CONFIG_FILE="$MODDIR/config.ini"
 
 # --- DNS Proxy Settings ---
@@ -34,7 +34,7 @@ ui_print "   Установка модуля My DoH Client"
 ui_print "--------------------------------------------------"
 ui_print " "
 
-ui_print "- Проверка пользовательского файла настроек..."
+ui_print "- Проверка наличия MyDoH_Config файла настроек..."
 
 # Check if user config file exists and read it
 if [ -f "$USER_CONFIG_PATH" ]; then
@@ -54,25 +54,25 @@ if [ -f "$USER_CONFIG_PATH" ]; then
         1) # Cloudflare
             SELECTED_DNS_SERVER="https://cloudflare-dns.com/dns-query"
             SELECTED_DNS_BOOTSTRAP="1.1.1.1,1.0.0.1"
-            ui_print "- Пользователь выбрал Cloudflare DoH."
+            ui_print "- Выбран Cloudflare DoH."
             ;;
         2) # Google
             SELECTED_DNS_SERVER="https://dns.google/dns-query"
             SELECTED_DNS_BOOTSTRAP="8.8.8.8,8.8.4.4"
-            ui_print "- Пользователь выбрал Google DoH."
+            ui_print "- Выбран Google DoH."
             ;;
         3) # Comss
             SELECTED_DNS_SERVER="https://dns.comss.one/dns-query"
             SELECTED_DNS_BOOTSTRAP="92.38.152.163,94.103.41.132"
-            ui_print "- Пользователь выбрал Comss DoH."
+            ui_print "- Выбран Comss DoH."
             ;;
         4) # Custom DoH
             if [ -n "$CUSTOM_DNS_HOST" ]; then
-                ui_print "- Пользователь выбрал свой DoH: $CUSTOM_DNS_HOST"
+                ui_print "- Выбран свой DoH: $CUSTOM_DNS_HOST"
                 SELECTED_DNS_SERVER="$CUSTOM_DNS_HOST"
                 if [ -n "$CUSTOM_BOOTSTRAP_IP" ]; then
                     SELECTED_DNS_BOOTSTRAP="$CUSTOM_BOOTSTRAP_IP"
-                    ui_print "  С пользовательским bootstrap IP: $CUSTOM_BOOTSTRAP_IP"
+                    ui_print "  Bootstrap IP: $CUSTOM_BOOTSTRAP_IP"
                 else
                     ui_print "  Используется bootstrap по умолчанию: $DEFAULT_DNS_BOOTSTRAP"
                 fi
@@ -89,14 +89,15 @@ if [ -f "$USER_CONFIG_PATH" ]; then
             ;;
     esac
 else
-    ui_print "- Пользовательский файл настроек не найден. Используется Cloudflare DoH по умолчанию."
+    ui_print "- Пользовательский файл настроек не найден. Используется Cloudflare."
 fi
 
+ui_print " "
+ui_print "- Проверка завершена."
 ui_print "- Выбранный DoH сервер: $SELECTED_DNS_SERVER"
 ui_print "- Выбранные Bootstrap IP: $SELECTED_DNS_BOOTSTRAP"
+ui_print " "
 
-# --- Сохраняем выбранные настройки DNS в файл внутри модуля ---
-# Этот файл будет прочитан service.sh при каждой загрузке
 P_DNS="-u $SELECTED_DNS_SERVER"
 P_BOOTSTRAP="-b $SELECTED_DNS_BOOTSTRAP"
 
@@ -104,8 +105,8 @@ P_BOOTSTRAP="-b $SELECTED_DNS_BOOTSTRAP"
 # Определяем URL для dnsproxy dnsproxy-linux-386-v0.75.5.tar.gz
 VER_GZ="$DNSPROXY_VERSION.tar.gz"
 case "$ARCH" in
-  arm64-v8a) URL="dnsproxy-linux-arm64-$VER_GZ" ;;
-  armeabi-v7a) URL="dnsproxy-linux-armv7-$VER_GZ" ;;
+  arm64) URL="dnsproxy-linux-arm64-$VER_GZ" ;;
+  armv7) URL="dnsproxy-linux-armv7-$VER_GZ" ;;
   x86_64) URL="dnsproxy-linux-386-.$VER_GZ" ;;
   *) ui_print "❌ Архитектура $ARCH не поддерживается"; exit 1 ;;
 esac
@@ -115,7 +116,7 @@ ui_print "  ⬇️ Скачиваем dnsproxy..."
 mkdir -p $BIN_DIR
 
 DNSPROXY_DOWNLOAD_URL="$DNSPROXY_BASE_URL/$URL"
-ui_print "- Downloading dnsproxy v$DNSPROXY_VERSION for $ARCH..."
+ui_print "- Downloading dnsproxy $DNSPROXY_VERSION for $ARCH..."
 ui_print "  From: $DNSPROXY_DOWNLOAD_URL"
 
 # Пробуем скачать через curl или wget
@@ -149,17 +150,15 @@ $P_H3 \\
 $P_BOOTSTRAP \\
 $P_FAIL
 EOF
+chmod 644 $CONFIG_FILE
+mkdir -p $ETC_DIR
+ln -sf "/data/adb/modules/$MODID/config.ini" $ETC_DIR/dns_config.ini
 
 # Создаем скрипт запуска с поддержкой команд start, stop, renew
 cat > $BIN_DIR/doh_client <<'EOF'
 #!/system/bin/sh
 
-SCRIPT_PATH="$0"
-if [ -L "$0" ]; then
-    SCRIPT_PATH="$(readlink -f "$0")"
-fi
-SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
-CONFIG_FILE="$SCRIPT_DIR/../config.ini"
+CONFIG_FILE="/etc/dns_config.ini"
 USER_CONFIG="/sdcard/Download/MyDoH_Config.txt"
 PID_FILE="/data/local/tmp/dnsproxy.pid"
 
@@ -194,10 +193,6 @@ renew_config() {
     fi
 }
 
-o_echo() {
-    echo "SCRIPT_PATH: $SCRIPT_PATH"
-    echo "MODDIR: $MODDIR"
-}
 case "$1" in
     start)
         start_dnsproxy
@@ -207,9 +202,6 @@ case "$1" in
         ;;
     renew)
         renew_config
-        ;;
-    o)
-        o_echo
         ;;
     *)
         echo "Usage: $0 {start|stop|renew|o}"
@@ -221,9 +213,9 @@ chmod 755 $BIN_DIR/doh_client
 
 ui_print " "
 ui_print "--------------------------------------------------"
-ui_print "   ✅ Установка завершена!"
-ui_print "   Для установки своего DNS, создайте файл:"
-ui_print "   /sdcard/Download/MyDoH_Config.txt"
-ui_print "   (см. README для примера содержимого)"
+ui_print "  ✅ Установка завершена!"
+ui_print "  Для установки своего DNS, создайте файл:"
+ui_print "  /sdcard/Download/MyDoH_Config.txt"
+ui_print "  (см. README для примера содержимого)"
 ui_print "--------------------------------------------------"
 ui_print " "
