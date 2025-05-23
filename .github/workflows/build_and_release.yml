@@ -25,23 +25,29 @@ jobs:
 
     - name: Prepare module directory for packaging
       run: |
-        mkdir -p tmp_package
-        cp -r ./* tmp_package/
-        # Remove any files that shouldn't be in the final module ZIP
-        rm -rf tmp_package/.git tmp_package/.github tmp_package/README.md tmp_package/LICENSE
+        # Create the temporary directory for packaging
+        mkdir -p module_package
+        # Copy the necessary files to the temporary directory
+        cp module.prop module_package/
+        cp customize.sh module_package/
+        cp activate.sh module_package/
+        cp MyDoH_Config.txt module_package/
+        cp -r META-INF module_package/
+        cp README.md module_package/
+        cp update.json module_package/
 
     - name: Create Magisk module ZIP
       run: |
         # Magisk modules are just ZIP files.
         # Ensure the customize.sh and service.sh have correct EOL (LF)
         # Use zip command to create the archive.
-        cd tmp_package
+        cd module_package
         zip -r "../${{ steps.get_version.outputs.MODULE_ID }}-${{ steps.get_version.outputs.MODULE_VERSION }}.zip" ./*
 
     - name: Upload module artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v4 # <-- Убедись, что здесь v4
       with:
-        name: magisk-module
+        name: magisk_dns_crypt
         path: "${{ steps.get_version.outputs.MODULE_ID }}-${{ steps.get_version.outputs.MODULE_VERSION }}.zip"
 
     - name: Create GitHub Release
@@ -63,6 +69,7 @@ jobs:
           1. Download the attached `.zip` file.
           2. Install it via Magisk Manager.
           3. Manually set your Android DNS to `127.0.0.1:5353`.
+          4. For custom DNS settings, create `/sdcard/Magisk_MyDoH_Config.txt` (see README for examples).
         draft: false
         prerelease: false
 
