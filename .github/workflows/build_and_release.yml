@@ -30,7 +30,7 @@ jobs:
         # Copy the necessary files to the temporary directory
         cp module.prop module_package/
         cp customize.sh module_package/
-        cp activate.sh module_package/
+        cp action.sh module_package/
         cp MyDoH_Config.txt module_package/
         cp -r META-INF module_package/
         cp README.md module_package/
@@ -39,7 +39,7 @@ jobs:
     - name: Create Magisk module ZIP
       run: |
         # Magisk modules are just ZIP files.
-        # Ensure the customize.sh and service.sh have correct EOL (LF)
+        # Ensure the customize.sh and action.sh have correct EOL (LF)
         # Use zip command to create the archive.
         cd module_package
         zip -r "../${{ steps.get_version.outputs.MODULE_ID }}-${{ steps.get_version.outputs.MODULE_VERSION }}.zip" ./*
