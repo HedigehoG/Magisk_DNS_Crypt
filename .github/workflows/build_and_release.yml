@@ -72,9 +72,9 @@ jobs:
         with:
           tag_name: "v${{ steps.get_version.outputs.MODULE_VERSION }}"
           name: "Release v${{ steps.get_version.outputs.MODULE_VERSION }}"
-          draft: false
-          prerelease: false
-          files: "${{ steps.pack.outputs.ZIP_NAME }}"
+          files: |
+            ${{ steps.pack.outputs.VERSION_ZIP }}
+            ${{ steps.pack.outputs.STATIC_ZIP }}
           body: |
             Release of Magisk DNS Crypt (v${{ steps.get_version.outputs.MODULE_VERSION }})
 
