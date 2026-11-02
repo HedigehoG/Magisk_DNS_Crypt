@@ -1,7 +1,7 @@
 id=magisk_dns_crypt
 name=Magisk DNS Crypt
-version=1.0
-versionCode=100
+version=v1.1.0
+versionCode=110
 author=HedigehoG
-description=Приватный DNS через dnsproxy (DoH/DNSCrypt), с автообновлением SPKI и поддержкой Action
+description=Локальный DoH DNS-резолвер на базе dnsproxy с безопасным редиректом iptables.
 updateJson=https://raw.githubusercontent.com/HedigehoG/Magisk_DNS_Crypt/main/update.json
