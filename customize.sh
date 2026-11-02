@@ -173,6 +173,7 @@ ln -sf "/data/adb/modules/$MODID/config.ini" $ETC_DIR/dns_config.ini
 cat > $BIN_DIR/doh_client <<'EOF'
 #!/system/bin/sh
 
+DNSPROXY_BIN="dnsproxy"
 CONFIG_FILE="/etc/dns_config.ini"
 USER_CONFIG="/sdcard/Download/MyDoH_Config.txt"
 PID_FILE="/data/local/tmp/dnsproxy.pid"
