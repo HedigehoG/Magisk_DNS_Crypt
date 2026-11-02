@@ -3,8 +3,8 @@ name: Build and Release Magisk Module
 on:
   push:
     branches:
-      - main  # Or master, depending on your default branch
-  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+      - main
+  workflow_dispatch:
 
 jobs:
   build:
@@ -13,74 +13,72 @@ jobs:
       contents: write
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Get module version from module.prop
-      id: get_version
-      run: |
-        MODULE_VERSION=$(grep '^version=' module.prop | cut -d'=' -f2 | tr -d '\r')
-        MODULE_ID=$(grep '^id=' module.prop | cut -d'=' -f2 | tr -d '\r')
-        echo "MODULE_VERSION=$MODULE_VERSION" >> "$GITHUB_OUTPUT"
-        echo "MODULE_ID=$MODULE_ID" >> "$GITHUB_OUTPUT"
-      # This part reads the version and ID from module.prop, so you only update it in one place.
+      - name: Get module version from module.prop
+        id: get_version
+        run: |
+          MODULE_VERSION=$(grep '^version=' module.prop | cut -d'=' -f2 | tr -d '\r')
+          MODULE_ID=$(grep '^id=' module.prop | cut -d'=' -f2 | tr -d '\r')
+          echo "MODULE_VERSION=$MODULE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "MODULE_ID=$MODULE_ID" >> "$GITHUB_OUTPUT"
 
-    - name: Prepare module directory for packaging
-      run: |
-        # Create the temporary directory for packaging
-        mkdir -p module_package
-        # Copy the necessary files to the temporary directory
-        cp module.prop module_package/
-        cp customize.sh module_package/
-        cp action.sh module_package/
-        cp MyDoH_Config.txt module_package/
-        cp -r META-INF module_package/
-        cp README.md module_package/
-        cp update.json module_package/
+      - name: Prepare module directory for packaging
+        run: |
+          # Устанавливаем dos2unix для фикса окончаний строк
+          sudo apt-get update && sudo apt-get install -y dos2unix
 
-    - name: Create Magisk module ZIP
-      run: |
-        # Magisk modules are just ZIP files.
-        # Ensure the customize.sh and action.sh have correct EOL (LF)
-        # Use zip command to create the archive.
-        cd module_package
-        zip -r "../${{ steps.get_version.outputs.MODULE_ID }}-${{ steps.get_version.outputs.MODULE_VERSION }}.zip" ./*
+          mkdir -p module_package
 
-    - name: Upload module artifact
-      uses: actions/upload-artifact@v4 # <-- Убедись, что здесь v4
-      with:
-        name: magisk_dns_crypt
-        path: "${{ steps.get_version.outputs.MODULE_ID }}-${{ steps.get_version.outputs.MODULE_VERSION }}.zip"
+          # Копируем всё необходимое (включая папку scripts)
+          cp module.prop module_package/
+          cp customize.sh module_package/
+          [ -f action.sh ] && cp action.sh module_package/
+          [ -f service.sh ] && cp service.sh module_package/
+          [ -f MyDoH_Config.txt ] && cp MyDoH_Config.txt module_package/
+          [ -d META-INF ] && cp -r META-INF module_package/
+          [ -d scripts ] && cp -r scripts module_package/
+          [ -f README.md ] && cp README.md module_package/
+          [ -f update.json ] && cp update.json module_package/
 
-    - name: Create GitHub Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: v${{ steps.get_version.outputs.MODULE_VERSION }}
-        release_name: Release v${{ steps.get_version.outputs.MODULE_VERSION }}
-        body: |
-          New release of My DoH Client Magisk module (v${{ steps.get_version.outputs.MODULE_VERSION }})
-          
-          **Changes:**
-          * Auto-downloaded dnsproxy binary for your device architecture.
-          * Configured dnsproxy to listen on 127.0.0.1:5353
-          
-          **Installation:**
-          1. Download the attached `.zip` file.
-          2. Install it via Magisk Manager.
-          3. Manually set your Android DNS to `127.0.0.1:5353`.
-          4. For custom DNS settings, create `/sdcard/Magisk_MyDoH_Config.txt` (see README for examples).
-        draft: false
-        prerelease: false
+          # Приводим все sh и prop к формату unix (LF)
+          find module_package -type f \( -name "*.sh" -o -name "*.prop" -o -name "*.txt" \) -exec dos2unix {} +
 
-    - name: Upload Release Asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: "./${{ steps.get_version.outputs.MODULE_ID }}-${{ steps.get_version.outputs.MODULE_VERSION }}.zip"
-        asset_name: "${{ steps.get_version.outputs.MODULE_ID }}-${{ steps.get_version.outputs.MODULE_VERSION }}.zip"
-        asset_content_type: application/zip
+      - name: Create Magisk module ZIP
+        run: |
+          ZIP_NAME="${{ steps.get_version.outputs.MODULE_ID }}-${{ steps.get_version.outputs.MODULE_VERSION }}.zip"
+          cd module_package
+          zip -r9 "../$ZIP_NAME" .
+          cd ..
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+        id: pack
+
+      - name: Upload module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: magisk_dns_crypt
+          path: "${{ steps.pack.outputs.ZIP_NAME }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: "v${{ steps.get_version.outputs.MODULE_VERSION }}"
+          name: "Release v${{ steps.get_version.outputs.MODULE_VERSION }}"
+          draft: false
+          prerelease: false
+          files: "${{ steps.pack.outputs.ZIP_NAME }}"
+          body: |
+            Release of Magisk DNS Crypt (v${{ steps.get_version.outputs.MODULE_VERSION }})
+
+            **Included features:**
+            * Automatic dnsproxy deployment
+            * Local DNS proxy on 127.0.0.1:5353
+            * Support for Cloudflare, Google, Comss & Custom DoH
+
+            **Installation:**
+            1. Download attached ZIP.
+            2. Flash via Magisk Manager / KernelSU / APatch.
+            3. Configure `/sdcard/Download/MyDoH_Config.txt` if needed.
