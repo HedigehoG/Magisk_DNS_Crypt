@@ -63,7 +63,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: magisk_dns_crypt
-          path: "${{ steps.pack.outputs.ZIP_NAME }}"
+          path: "*.zip"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -72,9 +72,9 @@ jobs:
         with:
           tag_name: "v${{ steps.get_version.outputs.MODULE_VERSION }}"
           name: "Release v${{ steps.get_version.outputs.MODULE_VERSION }}"
-          files: |
-            ${{ steps.pack.outputs.VERSION_ZIP }}
-            ${{ steps.pack.outputs.STATIC_ZIP }}
+          draft: false
+          prerelease: false
+          files: "*.zip"
           body: |
             Release of Magisk DNS Crypt (v${{ steps.get_version.outputs.MODULE_VERSION }})
 
