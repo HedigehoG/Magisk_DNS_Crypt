@@ -3,8 +3,15 @@
 # Magisk boot helper
 # This script is executed by Magisk during module installation.
 
-# !!! CHECK THE LATEST RELEASE VERSION ON https://github.com/AdguardTeam/dnsproxy/releases !!!
-DNSPROXY_VERSION="v0.75.5" # Current stable version
+# Дефолтная стабильная версия
+DNSPROXY_VERSION="v0.76.0"
+
+# (Опционально) Попытка получить последнюю версию автоматически:
+LATEST_TAG=$(curl -s --connect-timeout 3 https://api.github.com/repos/AdguardTeam/dnsproxy/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+if [ -n "$LATEST_TAG" ]; then
+    DNSPROXY_VERSION="$LATEST_TAG"
+fi
+ui_print "[*] Версия dnsproxy: $DNSPROXY_VERSION"
 DNSPROXY_BASE_URL="https://github.com/AdguardTeam/dnsproxy/releases/download/$DNSPROXY_VERSION"
 
 MODDIR=${MODPATH:-$1}
@@ -13,9 +20,17 @@ ETC_DIR="$MODDIR/system/etc"
 CONFIG_FILE="$MODDIR/config.ini"
 
 # --- DNS Proxy Settings ---
-P_LISTEN="-l 127.0.0.1 -p 5353" # Порт, на котором будет слушать dnsproxy
-P_FAIL="-f tls://dns.google -f tls://dns.adguard.com" # Порт для перенаправления запросов на случай ошибки
-P_H3="--http3" # Использовать HTTP/3
+P_LISTEN="-l 0.0.0.0 -p 5353" # Порт, на котором будет слушать dnsproxy
+P_FAIL="-f tls://dns.google -f tls://dns.adguard.com -f 8.8.4.4 -f 1.1.1.2" # Порт для перенаправления запросов на случай ошибки
+USE_HTTP3=$(grep -E '^USE_HTTP3=' "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' "\r')
+
+if [ "$USE_HTTP3" = "1" ]; then
+    P_H3="--http3"
+    log "[*] HTTP/3 включен"
+else
+    P_H3=""
+    log "[*] HTTP/3 отключен (используется HTTP/2)"
+fi
 
 # --- User Configuration ---
 USER_CONFIG_PATH="/sdcard/Download/MyDoH_Config.txt" # Путь к пользовательскому файлу настроек на устройстве
@@ -162,22 +177,86 @@ CONFIG_FILE="/etc/dns_config.ini"
 USER_CONFIG="/sdcard/Download/MyDoH_Config.txt"
 PID_FILE="/data/local/tmp/dnsproxy.pid"
 
+clean_iptables() {
+    echo "[*] Очистка старых правил iptables..."
+    for proto in udp tcp; do
+        while iptables -t nat -D OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null; do :; done
+        while iptables -t nat -D PREROUTING -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null; do :; done
+
+        while ip6tables -t nat -D OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null; do :; done
+        while ip6tables -t nat -D PREROUTING -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null; do :; done
+    done
+}
+
+apply_iptables() {
+    echo "[+] Применяем правила перенаправления DNS (53 -> 5353)..."
+    for proto in udp tcp; do
+        iptables -t nat -A OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 5353
+        iptables -t nat -A PREROUTING -p $proto --dport 53 -j REDIRECT --to-ports 5353
+    done
+}
+
+check_dns_health() {
+    local host_to_test="google.com"
+    local max_retries=5
+    local count=0
+
+    echo "[*] Ожидание запуска и проверка резолва через 127.0.0.1:5353..."
+
+    while [ $count -lt $max_retries ]; do
+        sleep 1
+        if ! kill -0 "$1" 2>/dev/null; then
+            echo "[-] Ошибка: процесс dnsproxy аварийно завершился!"
+            return 1
+        fi
+
+        if nslookup "$host_to_test" 127.0.0.1:5353 >/dev/null 2>&1 || \
+           nslookup "$host_to_test" 127.0.0.1 -port=5353 >/dev/null 2>&1; then
+            echo "[+] Тест DNS успешен: локальный резолвер отвечает!"
+            return 0
+        fi
+
+        if ss -ulpn 2>/dev/null | grep -q ":5353 " || netstat -ulpn 2>/dev/null | grep -q ":5353 "; then
+            echo "[+] Сокет 127.0.0.1:5353 активен и слушает!"
+            return 0
+        fi
+
+        count=$((count + 1))
+    done
+
+    echo "[-] Таймаут: 127.0.0.1:5353 не ответил за $max_retries сек."
+    return 1
+}
+
 start_dnsproxy() {
-    ARGS=$(tr '\n' ' ' < "$CONFIG_FILE")
-    "dnsproxy" $ARGS &
-    echo $! > "$PID_FILE"
-    echo "dnsproxy started (PID $(cat $PID_FILE))"
-    iptables -t nat -A OUTPUT -p tcp --dport 53 -j REDIRECT --to-ports 5353
-    iptables -t nat -A OUTPUT -p udp --dport 53 -j REDIRECT --to-ports 5353
+    clean_iptables
+
+    killall dnsproxy 2>/dev/null
+    sleep 0.5
+
+    local ARGS="-l 0.0.0.0 -p 5353 $P_H3 $UPSTREAM_ARGS"
+
+    echo "[*] Запуск $DNSPROXY_BIN $ARGS"
+    $DNSPROXY_BIN $ARGS > "$LOG_FILE" 2>&1 &
+    local PID=$!
+
+    if check_dns_health "$PID"; then
+        apply_iptables
+        echo "[✓] Magisk DNS Crypt успешно запущен и обслуживает трафик."
+    else
+        echo "[!] КРИТИЧЕСКАЯ ОШИБКА: dnsproxy не заработал. Правила iptables НЕ применены."
+        echo "[!] Интернет остаётся на системном DNS. Смотрите лог: $LOG_FILE"
+        kill -9 "$PID" 2>/dev/null
+        return 1
+    fi
 }
 
 stop_dnsproxy() {
     if [ -f "$PID_FILE" ]; then
+        clean_iptables
         kill "$(cat $PID_FILE)" 2>/dev/null
         rm -f "$PID_FILE"
         echo "dnsproxy stopped"
-        iptables -t nat -D OUTPUT -p tcp --dport 53 -j REDIRECT --to-ports 5353
-        iptables -t nat -D OUTPUT -p udp --dport 53 -j REDIRECT --to-ports 5353
     else
         echo "dnsproxy is not running"
     fi
@@ -185,8 +264,6 @@ stop_dnsproxy() {
 
 renew_config() {
     if [ -f "$USER_CONFIG" ]; then
-        # Обновить config.ini, перечитав пользовательский конфиг
-        # Можно просто перезапустить customize.sh, но здесь только echo для примера
         echo "Please reinstall the module to apply new settings from $USER_CONFIG"
     else
         echo "User config not found: $USER_CONFIG"
