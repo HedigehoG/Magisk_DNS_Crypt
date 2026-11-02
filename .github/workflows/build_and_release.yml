@@ -38,7 +38,6 @@ jobs:
           [ -f service.sh ] && cp service.sh module_package/
           [ -f MyDoH_Config.txt ] && cp MyDoH_Config.txt module_package/
           [ -d META-INF ] && cp -r META-INF module_package/
-          [ -d scripts ] && cp -r scripts module_package/
           [ -f README.md ] && cp README.md module_package/
           [ -f update.json ] && cp update.json module_package/
 
@@ -47,11 +46,17 @@ jobs:
 
       - name: Create Magisk module ZIP
         run: |
-          ZIP_NAME="${{ steps.get_version.outputs.MODULE_ID }}-${{ steps.get_version.outputs.MODULE_VERSION }}.zip"
+          VERSION_ZIP="${{ steps.get_version.outputs.MODULE_ID }}-v${{ steps.get_version.outputs.MODULE_VERSION }}.zip"
+          STATIC_ZIP="${{ steps.get_version.outputs.MODULE_ID }}.zip"
+
           cd module_package
-          zip -r9 "../$ZIP_NAME" .
+          zip -r9 "../$VERSION_ZIP" .
           cd ..
-          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+
+          cp "$VERSION_ZIP" "$STATIC_ZIP"
+
+          echo "VERSION_ZIP=$VERSION_ZIP" >> "$GITHUB_OUTPUT"
+          echo "STATIC_ZIP=$STATIC_ZIP" >> "$GITHUB_OUTPUT"
         id: pack
 
       - name: Upload module artifact
