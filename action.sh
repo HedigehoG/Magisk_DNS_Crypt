@@ -1,11 +1,9 @@
 #!/system/bin/sh
-# Простейшее переключение — если уже запущено, останавливаем
-if pgrep -f dnsproxy > /dev/null; then
-    echo "[*] dnsproxy уже запущен. Останавливаем..."
-    doh_client stop
-    echo "Статус: остановлен"
+MODDIR=${0%/*}
+LAUNCHER="$MODDIR/system/bin/doh_client"
+
+if [ -f "$LAUNCHER" ]; then
+    sh "$LAUNCHER"
 else
-    echo "[*] Запуск dnsproxy..."
-    doh_client start
-    echo "Статус: запущен"
+    echo "[-] Ошибка: $LAUNCHER не найден!"
 fi
