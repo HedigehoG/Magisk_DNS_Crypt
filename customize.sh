@@ -3,187 +3,97 @@
 # Magisk boot helper
 # This script is executed by Magisk during module installation.
 
-# Дефолтная стабильная версия
+# Базовая стабильная версия AdGuard dnsproxy
 DNSPROXY_VERSION="v0.76.0"
 
-# (Опционально) Попытка получить последнюю версию автоматически:
-LATEST_TAG=$(curl -s --connect-timeout 3 https://api.github.com/repos/AdguardTeam/dnsproxy/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+# Попытка получить последнюю версию автоматически (если есть сеть)
+LATEST_TAG=$(curl -s --connect-timeout 3 https://api.github.com/repos/AdguardTeam/dnsproxy/releases/latest 2>/dev/null | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 if [ -n "$LATEST_TAG" ]; then
     DNSPROXY_VERSION="$LATEST_TAG"
 fi
-ui_print "[*] Версия dnsproxy: $DNSPROXY_VERSION"
-DNSPROXY_BASE_URL="https://github.com/AdguardTeam/dnsproxy/releases/download/$DNSPROXY_VERSION"
-
-MODDIR=${MODPATH:-$1}
-BIN_DIR="$MODDIR/system/bin"
-ETC_DIR="$MODDIR/system/etc"
-CONFIG_FILE="$MODDIR/config.ini"
-
-# --- DNS Proxy Settings ---
-P_LISTEN="-l 0.0.0.0 -p 5353" # Порт, на котором будет слушать dnsproxy
-P_FAIL="-f tls://dns.google -f tls://dns.adguard.com -f 8.8.4.4 -f 1.1.1.2" # Порт для перенаправления запросов на случай ошибки
-USE_HTTP3=$(grep -E '^USE_HTTP3=' "$CONFIG_FILE" | cut -d'=' -f2 | tr -d ' "\r')
-
-if [ "$USE_HTTP3" = "1" ]; then
-    P_H3="--http3"
-    log "[*] HTTP/3 включен"
-else
-    P_H3=""
-    log "[*] HTTP/3 отключен (используется HTTP/2)"
-fi
-
-# --- User Configuration ---
-USER_CONFIG_PATH="/sdcard/Download/MyDoH_Config.txt" # Путь к пользовательскому файлу настроек на устройстве
-
-# --- Default DNS Server Settings ---
-DEFAULT_DNS_SERVER="https://cloudflare-dns.com/dns-query"
-DEFAULT_DNS_BOOTSTRAP="1.1.1.1,1.0.0.1"
-
-# --- Переменные для выбранного DNS ---
-SELECTED_DNS_SERVER="$DEFAULT_DNS_SERVER"
-SELECTED_DNS_BOOTSTRAP="$DEFAULT_DNS_BOOTSTRAP"
 
 ui_print " "
 ui_print "--------------------------------------------------"
 ui_print "   Установка модуля My DoH Client"
 ui_print "--------------------------------------------------"
-ui_print " "
+ui_print "[*] Версия dnsproxy: $DNSPROXY_VERSION"
 
-ui_print "- Проверка наличия MyDoH_Config файла настроек..."
+MODDIR=${MODPATH:-$1}
+BIN_DIR="$MODDIR/system/bin"
+USER_CONFIG_PATH="/sdcard/Download/MyDoH_Config.txt"
 
-# Check if user config file exists and read it
-if [ -f "$USER_CONFIG_PATH" ]; then
-    ui_print "- Найден пользовательский конфиг: $USER_CONFIG_PATH"
-    # Attempt to convert line endings from Windows (CRLF) to Unix (LF) if 'dos2unix' is available.
-    # This is a common source of issues when sourcing files in shell environments.
-    if command -v dos2unix >/dev/null 2>&1; then
-        dos2unix "$USER_CONFIG_PATH" >/dev/null 2>&1
-        ui_print "- Конфиг файл обработан (dos2unix)."
-    fi
-    
-    # Source the file to load variables. Variables defined in the user config will override initial values.
-    . "$USER_CONFIG_PATH"
+# Создаем папки
+mkdir -p "$BIN_DIR"
 
-    # Process user's choice based on DNS_CHOICE variable from the config file
-    case "$DNS_CHOICE" in
-        1) # Cloudflare
-            SELECTED_DNS_SERVER="https://cloudflare-dns.com/dns-query"
-            SELECTED_DNS_BOOTSTRAP="1.1.1.1,1.0.0.1"
-            ui_print "- Выбран Cloudflare DoH."
-            ;;
-        2) # Google
-            SELECTED_DNS_SERVER="https://dns.google/dns-query"
-            SELECTED_DNS_BOOTSTRAP="8.8.8.8,8.8.4.4"
-            ui_print "- Выбран Google DoH."
-            ;;
-        3) # Comss
-            SELECTED_DNS_SERVER="https://dns.comss.one/dns-query"
-            SELECTED_DNS_BOOTSTRAP="92.38.152.163,94.103.41.132"
-            ui_print "- Выбран Comss DoH."
-            ;;
-        4) # Custom DoH
-            if [ -n "$CUSTOM_DNS_HOST" ]; then
-                ui_print "- Выбран свой DoH: $CUSTOM_DNS_HOST"
-                SELECTED_DNS_SERVER="$CUSTOM_DNS_HOST"
-                if [ -n "$CUSTOM_BOOTSTRAP_IP" ]; then
-                    SELECTED_DNS_BOOTSTRAP="$CUSTOM_BOOTSTRAP_IP"
-                    ui_print "  Bootstrap IP: $CUSTOM_BOOTSTRAP_IP"
-                else
-                    ui_print "  Используется bootstrap по умолчанию: $DEFAULT_DNS_BOOTSTRAP"
-                fi
-            else
-                ui_print "-! Ошибка: Выбран пользовательский DNS (4), но CUSTOM_DNS_HOST не указан в файле настроек."
-                ui_print "   Возврат к Cloudflare DoH по умолчанию."
-                SELECTED_DNS_SERVER="$DEFAULT_DNS_SERVER"
-                SELECTED_DNS_BOOTSTRAP="$DEFAULT_DNS_BOOTSTRAP"
-            fi
-            ;;
-        *)
-            ui_print "- Неверный выбор DNS_CHOICE в файле настроек или файл не содержит выбора."
-            ui_print "  Используется Cloudflare DoH по умолчанию."
-            ;;
-    esac
-else
-    ui_print "- Пользовательский файл настроек не найден. Используется Cloudflare."
-fi
-
-ui_print " "
-ui_print "- Проверка завершена."
-ui_print "- Выбранный DoH сервер: $SELECTED_DNS_SERVER"
-ui_print "- Выбранные Bootstrap IP: $SELECTED_DNS_BOOTSTRAP"
-ui_print " "
-
-P_DNS="-u $SELECTED_DNS_SERVER"
-P_BOOTSTRAP="-b $SELECTED_DNS_BOOTSTRAP"
-
-
-# Определяем URL для dnsproxy dnsproxy-linux-386-v0.75.5.tar.gz
+# Корректное определение архитектуры под релизы Adguard
 VER_GZ="$DNSPROXY_VERSION.tar.gz"
 case "$ARCH" in
-  arm64) URL="dnsproxy-linux-arm64-$VER_GZ" ;;
-  armv7) URL="dnsproxy-linux-armv7-$VER_GZ" ;;
-  x86_64) URL="dnsproxy-linux-386-.$VER_GZ" ;;
-  *) ui_print "❌ Архитектура $ARCH не поддерживается"; exit 1 ;;
+  arm64)      URL="dnsproxy-linux-arm64-$VER_GZ" ;;
+  arm|armv7)  URL="dnsproxy-linux-arm-$VER_GZ" ;;
+  x86)        URL="dnsproxy-linux-386-$VER_GZ" ;;
+  x64|x86_64) URL="dnsproxy-linux-amd64-$VER_GZ" ;;
+  *)          ui_print "❌ Архитектура $ARCH не поддерживается"; exit 1 ;;
 esac
 
-# Скачиваем и распаковываем dnsproxy
-ui_print "  ⬇️ Скачиваем dnsproxy..."
-mkdir -p $BIN_DIR
+DNSPROXY_DOWNLOAD_URL="https://github.com/AdguardTeam/dnsproxy/releases/download/$DNSPROXY_VERSION/$URL"
+ui_print "- Загрузка dnsproxy для $ARCH..."
+ui_print "  URL: $DNSPROXY_DOWNLOAD_URL"
 
-DNSPROXY_DOWNLOAD_URL="$DNSPROXY_BASE_URL/$URL"
-ui_print "- Downloading dnsproxy $DNSPROXY_VERSION for $ARCH..."
-ui_print "  From: $DNSPROXY_DOWNLOAD_URL"
-
-# Пробуем скачать через curl или wget
 TMP_DIR="$MODDIR/tmp"
-mkdir -p $TMP_DIR
-if command -v curl >/dev/null; then
-  curl -L $DNSPROXY_DOWNLOAD_URL -o $TMP_DIR/dnsproxy.tar.gz
-elif command -v wget >/dev/null; then
-  wget $DNSPROXY_DOWNLOAD_URL -O $TMP_DIR/dnsproxy.tar.gz
+mkdir -p "$TMP_DIR"
+
+if command -v curl >/dev/null 2>&1; then
+  curl -L "$DNSPROXY_DOWNLOAD_URL" -o "$TMP_DIR/dnsproxy.tar.gz"
+elif command -v wget >/dev/null 2>&1; then
+  wget "$DNSPROXY_DOWNLOAD_URL" -O "$TMP_DIR/dnsproxy.tar.gz"
 else
   ui_print "❌ Ошибка: не найден curl или wget"
   exit 1
 fi
 
-if [ $? -ne 0 ]; then
+if [ $? -ne 0 ] || [ ! -s "$TMP_DIR/dnsproxy.tar.gz" ]; then
   ui_print "❌ Ошибка загрузки dnsproxy"
   exit 1
 fi
 
-tar -xzf $TMP_DIR/dnsproxy.tar.gz -C $TMP_DIR
-mv $TMP_DIR/*/dnsproxy $BIN_DIR/dnsproxy
-chmod 755 $BIN_DIR/dnsproxy
-# Очистка
-rm -rf $TMP_DIR
+ui_print "- Распаковка бинарника..."
+tar -xzf "$TMP_DIR/dnsproxy.tar.gz" -C "$TMP_DIR"
+mv "$TMP_DIR"/*/dnsproxy "$BIN_DIR/dnsproxy"
+chmod 755 "$BIN_DIR/dnsproxy"
+rm -rf "$TMP_DIR"
 
-# Создаем файл конфигурации
-cat > $CONFIG_FILE <<EOF
-$P_LISTEN \\
-$P_DNS \\
-$P_H3 \\
-$P_BOOTSTRAP \\
-$P_FAIL
-EOF
-chmod 644 $CONFIG_FILE
-mkdir -p $ETC_DIR
-ln -sf "/data/adb/modules/$MODID/config.ini" $ETC_DIR/dns_config.ini
+# Проверка конфига на этапе установки для информации пользователю
+if [ -f "$USER_CONFIG_PATH" ]; then
+    ui_print "- Найден пользовательский конфиг: $USER_CONFIG_PATH"
+else
+    ui_print "- Конфиг не найден, будет использован Cloudflare по умолчанию."
+fi
 
-# Создаем скрипт запуска с поддержкой команд start, stop, renew
-cat > $BIN_DIR/doh_client <<'EOF'
+ui_print "- Создание диспетчера службы doh_client..."
+
+# Создаем рабочий скрипт запуска doh_client с динамической подгрузкой конфига
+cat > "$BIN_DIR/doh_client" <<'EOF'
 #!/system/bin/sh
 
-DNSPROXY_BIN="dnsproxy"
-CONFIG_FILE="/etc/dns_config.ini"
-USER_CONFIG="/sdcard/Download/MyDoH_Config.txt"
+DIR="$(dirname "$0")"
+DNSPROXY_BIN="$DIR/dnsproxy"
 PID_FILE="/data/local/tmp/dnsproxy.pid"
+LOG_FILE="/data/local/tmp/dnsproxy.log"
+
+# Поиск пользовательского конфига
+if [ -f "/sdcard/Download/MyDoH_Config.txt" ]; then
+    USER_CONFIG="/sdcard/Download/MyDoH_Config.txt"
+elif [ -f "/data/media/0/Download/MyDoH_Config.txt" ]; then
+    USER_CONFIG="/data/media/0/Download/MyDoH_Config.txt"
+else
+    USER_CONFIG=""
+fi
 
 clean_iptables() {
-    echo "[*] Очистка старых правил iptables..."
+    echo "[*] Очистка правил iptables..."
     for proto in udp tcp; do
         while iptables -t nat -D OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null; do :; done
         while iptables -t nat -D PREROUTING -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null; do :; done
-
         while ip6tables -t nat -D OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null; do :; done
         while ip6tables -t nat -D PREROUTING -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null; do :; done
     done
@@ -194,80 +104,127 @@ apply_iptables() {
     for proto in udp tcp; do
         iptables -t nat -A OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 5353
         iptables -t nat -A PREROUTING -p $proto --dport 53 -j REDIRECT --to-ports 5353
+        ip6tables -t nat -A OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null
+        ip6tables -t nat -A PREROUTING -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null
     done
+}
+
+load_config() {
+    # Значения по умолчанию (Cloudflare)
+    SELECTED_DNS="https://cloudflare-dns.com/dns-query"
+    SELECTED_BOOTSTRAP="1.1.1.1,1.0.0.1"
+    P_H3=""
+
+    if [ -n "$USER_CONFIG" ] && [ -f "$USER_CONFIG" ]; then
+        echo "[*] Загрузка настроек из: $USER_CONFIG"
+        # Читаем переменные напрямую из конфига
+        . "$USER_CONFIG" 2>/dev/null
+
+        # Опция HTTP/3
+        if [ "$USE_HTTP3" = "1" ]; then
+            P_H3="--http3"
+            echo "[*] HTTP/3 включен"
+        else
+            echo "[*] HTTP/3 выключен (HTTP/2)"
+        fi
+
+        # Выбор провайдера
+        case "$DNS_CHOICE" in
+            1)
+                SELECTED_DNS="https://cloudflare-dns.com/dns-query"
+                SELECTED_BOOTSTRAP="1.1.1.1,1.0.0.1"
+                ;;
+            2)
+                SELECTED_DNS="https://dns.google/dns-query"
+                SELECTED_BOOTSTRAP="8.8.8.8,8.8.4.4"
+                ;;
+            3)
+                SELECTED_DNS="https://dns.comss.one/dns-query"
+                SELECTED_BOOTSTRAP="92.38.152.163,94.103.41.132"
+                ;;
+            4)
+                if [ -n "$CUSTOM_DNS_HOST" ]; then
+                    SELECTED_DNS="$CUSTOM_DNS_HOST"
+                    [ -n "$CUSTOM_BOOTSTRAP_IP" ] && SELECTED_BOOTSTRAP="$CUSTOM_BOOTSTRAP_IP"
+                fi
+                ;;
+        esac
+    fi
+
+    # Собираем bootstrap параметры
+    BOOTSTRAP_ARGS=""
+    for ip in $(echo "$SELECTED_BOOTSTRAP" | tr ',' ' '); do
+        BOOTSTRAP_ARGS="$BOOTSTRAP_ARGS -b $ip:53"
+    done
+
+    UPSTREAM_ARGS="-u $SELECTED_DNS $BOOTSTRAP_ARGS"
+    echo "[*] Выбран DoH сервер: $SELECTED_DNS"
 }
 
 check_dns_health() {
     local host_to_test="google.com"
-    local max_retries=5
     local count=0
 
-    echo "[*] Ожидание запуска и проверка резолва через 127.0.0.1:5353..."
-
-    while [ $count -lt $max_retries ]; do
+    echo "[*] Проверка ответа локального резолвера..."
+    while [ $count -lt 5 ]; do
         sleep 1
         if ! kill -0 "$1" 2>/dev/null; then
-            echo "[-] Ошибка: процесс dnsproxy аварийно завершился!"
+            echo "[-] Процесс dnsproxy аварийно упал!"
+            [ -f "$LOG_FILE" ] && tail -n 5 "$LOG_FILE"
             return 1
         fi
 
         if nslookup "$host_to_test" 127.0.0.1:5353 >/dev/null 2>&1 || \
-           nslookup "$host_to_test" 127.0.0.1 -port=5353 >/dev/null 2>&1; then
-            echo "[+] Тест DNS успешен: локальный резолвер отвечает!"
+           ss -ulpn 2>/dev/null | grep -q ":5353 "; then
+            echo "[+] DNS-резолвер успешно отвечает!"
             return 0
         fi
-
-        if ss -ulpn 2>/dev/null | grep -q ":5353 " || netstat -ulpn 2>/dev/null | grep -q ":5353 "; then
-            echo "[+] Сокет 127.0.0.1:5353 активен и слушает!"
-            return 0
-        fi
-
         count=$((count + 1))
     done
 
-    echo "[-] Таймаут: 127.0.0.1:5353 не ответил за $max_retries сек."
+    echo "[-] Таймаут ожидания резолвера."
     return 1
 }
 
 start_dnsproxy() {
-    clean_iptables
+    stop_dnsproxy >/dev/null 2>&1
+    load_config
 
-    killall dnsproxy 2>/dev/null
-    sleep 0.5
+    local ARGS="-l 127.0.0.1 -l ::1 -p 5353 -f 1.1.1.1:53 -f 8.8.8.8:53 $P_H3 $UPSTREAM_ARGS"
 
-    local ARGS="-l 0.0.0.0 -p 5353 $P_H3 $UPSTREAM_ARGS"
-
-    echo "[*] Запуск $DNSPROXY_BIN $ARGS"
+    echo "[*] Запуск dnsproxy..."
     $DNSPROXY_BIN $ARGS > "$LOG_FILE" 2>&1 &
     local PID=$!
+    echo "$PID" > "$PID_FILE"
 
     if check_dns_health "$PID"; then
         apply_iptables
-        echo "[✓] Magisk DNS Crypt успешно запущен и обслуживает трафик."
+        echo "[✓] Magisk DNS Crypt успешно запущен и перенаправляет трафик."
     else
-        echo "[!] КРИТИЧЕСКАЯ ОШИБКА: dnsproxy не заработал. Правила iptables НЕ применены."
-        echo "[!] Интернет остаётся на системном DNS. Смотрите лог: $LOG_FILE"
+        echo "[!] Ошибка старта dnsproxy. Правила iptables НЕ применены."
         kill -9 "$PID" 2>/dev/null
+        rm -f "$PID_FILE"
+        clean_iptables
         return 1
     fi
 }
 
 stop_dnsproxy() {
+    echo "[*] Остановка службы..."
+    clean_iptables
     if [ -f "$PID_FILE" ]; then
-        clean_iptables
-        kill "$(cat $PID_FILE)" 2>/dev/null
+        kill -9 "$(cat "$PID_FILE")" 2>/dev/null
         rm -f "$PID_FILE"
-        echo "dnsproxy stopped"
-    else
-        echo "dnsproxy is not running"
     fi
+    killall -9 dnsproxy 2>/dev/null
+    echo "[✓] Служба остановлена."
 }
 
-renew_config() {
-    if [ -f "$USER_CONFIG" ]; then
-        echo "Please reinstall the module to apply new settings from $USER_CONFIG"
+status_dnsproxy() {
+    if pidof dnsproxy >/dev/null 2>&1; then
+        echo "[*] dnsproxy РАБОТАЕТ (PID: $(pidof dnsproxy))"
     else
-        echo "User config not found: $USER_CONFIG"
+        echo "[-] dnsproxy ОСТАНОВЛЕН"
     fi
 }
 
@@ -278,22 +235,31 @@ case "$1" in
     stop)
         stop_dnsproxy
         ;;
-    renew)
-        renew_config
+    renew|restart)
+        echo "[*] Перезапуск службы с обновлением настроек..."
+        stop_dnsproxy
+        sleep 1
+        start_dnsproxy
+        ;;
+    status)
+        status_dnsproxy
         ;;
     *)
-        echo "Usage: $0 {start|stop|renew|o}"
+        # Тумблер: если работает — глушим, если выключен — стартуем
+        if pidof dnsproxy >/dev/null 2>&1; then
+            stop_dnsproxy
+        else
+            start_dnsproxy
+        fi
         ;;
 esac
 EOF
 
-chmod 755 $BIN_DIR/doh_client
+chmod 755 "$BIN_DIR/doh_client"
 
 ui_print " "
 ui_print "--------------------------------------------------"
 ui_print "  ✅ Установка завершена!"
-ui_print "  Для установки своего DNS, создайте файл:"
-ui_print "  /sdcard/Download/MyDoH_Config.txt"
-ui_print "  (см. README для примера содержимого)"
+ui_print "  Конфиг: /sdcard/Download/MyDoH_Config.txt"
 ui_print "--------------------------------------------------"
 ui_print " "
