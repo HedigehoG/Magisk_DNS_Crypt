@@ -71,7 +71,7 @@ fi
 
 ui_print "- Создание диспетчера службы doh_client..."
 
-# Создаем рабочий скрипт запуска doh_client с динамической подгрузкой конфига
+# Создаем рабочий скрипт запуска doh_client с защитой от петель и без фейковых fallback
 cat > "$BIN_DIR/doh_client" <<'EOF'
 #!/system/bin/sh
 
@@ -90,37 +90,72 @@ else
 fi
 
 clean_iptables() {
-    echo "[*] Очистка правил iptables..."
+    echo "[*] Очистка цепочек iptables..."
+    # Удаляем прыжки в нашу цепочку
     for proto in udp tcp; do
+        while iptables -t nat -D OUTPUT -p $proto --dport 53 -j DNSPROXY 2>/dev/null; do :; done
+        while iptables -t nat -D PREROUTING -p $proto --dport 53 -j DNSPROXY 2>/dev/null; do :; done
+        while ip6tables -t nat -D OUTPUT -p $proto --dport 53 -j DNSPROXY 2>/dev/null; do :; done
+        while ip6tables -t nat -D PREROUTING -p $proto --dport 53 -j DNSPROXY 2>/dev/null; do :; done
+        
+        # Подчищаем старые прямые правила (если остались от прошлых версий)
         while iptables -t nat -D OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null; do :; done
         while iptables -t nat -D PREROUTING -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null; do :; done
         while ip6tables -t nat -D OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null; do :; done
         while ip6tables -t nat -D PREROUTING -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null; do :; done
     done
+
+    # Сбрасываем и удаляем саму цепочку
+    iptables -t nat -F DNSPROXY 2>/dev/null
+    iptables -t nat -X DNSPROXY 2>/dev/null
+    ip6tables -t nat -F DNSPROXY 2>/dev/null
+    ip6tables -t nat -X DNSPROXY 2>/dev/null
 }
 
 apply_iptables() {
-    echo "[+] Применяем правила перенаправления DNS (53 -> 5353)..."
+    echo "[+] Применяем правила перенаправления (через цепочку DNSPROXY)..."
+    clean_iptables
+
+    # Создаем отдельные изолированные цепочки
+    iptables -t nat -N DNSPROXY
+    ip6tables -t nat -N DNSPROXY 2>/dev/null
+
+    # 1. Пропускаем трафик на loopback (не трогаем локальные сокеты)
+    iptables -t nat -A DNSPROXY -o lo -j RETURN
+    ip6tables -t nat -A DNSPROXY -o lo -j RETURN 2>/dev/null
+
+    # 2. АНТИ-ПЕТЛЯ: Исключаем Bootstrap IP адреса из перехвата!
+    # Запросы dnsproxy к bootstrap DNS должны идти напрямую в сеть
+    for ip in $(echo "$SELECTED_BOOTSTRAP" | tr ',' ' '); do
+        echo "[*] Анти-петля: исключаем Bootstrap IP $ip"
+        iptables -t nat -A DNSPROXY -d "$ip" -j RETURN
+        ip6tables -t nat -A DNSPROXY -d "$ip" -j RETURN 2>/dev/null
+    done
+
+    # 3. Всё остальное на порт 53 заворачиваем в dnsproxy (5353)
+    iptables -t nat -A DNSPROXY -p udp --dport 53 -j REDIRECT --to-ports 5353
+    iptables -t nat -A DNSPROXY -p tcp --dport 53 -j REDIRECT --to-ports 5353
+    ip6tables -t nat -A DNSPROXY -p udp --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null
+    ip6tables -t nat -A DNSPROXY -p tcp --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null
+
+    # 4. Активируем цепочку для исходящего трафика (OUTPUT) и точки доступа (PREROUTING)
     for proto in udp tcp; do
-        iptables -t nat -A OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 5353
-        iptables -t nat -A PREROUTING -p $proto --dport 53 -j REDIRECT --to-ports 5353
-        ip6tables -t nat -A OUTPUT -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null
-        ip6tables -t nat -A PREROUTING -p $proto --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null
+        iptables -t nat -A OUTPUT -p $proto --dport 53 -j DNSPROXY
+        iptables -t nat -A PREROUTING -p $proto --dport 53 -j DNSPROXY
+        ip6tables -t nat -A OUTPUT -p $proto --dport 53 -j DNSPROXY 2>/dev/null
+        ip6tables -t nat -A PREROUTING -p $proto --dport 53 -j DNSPROXY 2>/dev/null
     done
 }
 
 load_config() {
-    # Значения по умолчанию (Cloudflare)
     SELECTED_DNS="https://cloudflare-dns.com/dns-query"
     SELECTED_BOOTSTRAP="1.1.1.1,1.0.0.1"
     P_H3=""
 
     if [ -n "$USER_CONFIG" ] && [ -f "$USER_CONFIG" ]; then
         echo "[*] Загрузка настроек из: $USER_CONFIG"
-        # Читаем переменные напрямую из конфига
         . "$USER_CONFIG" 2>/dev/null
 
-        # Опция HTTP/3
         if [ "$USE_HTTP3" = "1" ]; then
             P_H3="--http3"
             echo "[*] HTTP/3 включен"
@@ -128,7 +163,6 @@ load_config() {
             echo "[*] HTTP/3 выключен (HTTP/2)"
         fi
 
-        # Выбор провайдера
         case "$DNS_CHOICE" in
             1)
                 SELECTED_DNS="https://cloudflare-dns.com/dns-query"
@@ -165,24 +199,24 @@ check_dns_health() {
     local host_to_test="google.com"
     local count=0
 
-    echo "[*] Проверка ответа локального резолвера..."
-    while [ $count -lt 5 ]; do
+    echo "[*] Честная проверка чистого DoH резолвера (без fallback)..."
+    while [ $count -lt 6 ]; do
         sleep 1
         if ! kill -0 "$1" 2>/dev/null; then
-            echo "[-] Процесс dnsproxy аварийно упал!"
-            [ -f "$LOG_FILE" ] && tail -n 5 "$LOG_FILE"
+            echo "[-] dnsproxy аварийно упал!"
+            [ -f "$LOG_FILE" ] && tail -n 10 "$LOG_FILE"
             return 1
         fi
 
         if nslookup "$host_to_test" 127.0.0.1:5353 >/dev/null 2>&1 || \
            ss -ulpn 2>/dev/null | grep -q ":5353 "; then
-            echo "[+] DNS-резолвер успешно отвечает!"
+            echo "[+] Чистый DoH-резолвер успешно ответил!"
             return 0
         fi
         count=$((count + 1))
     done
 
-    echo "[-] Таймаут ожидания резолвера."
+    echo "[-] Ошибка: DoH резолвер не отвечает на запросы."
     return 1
 }
 
@@ -190,7 +224,8 @@ start_dnsproxy() {
     stop_dnsproxy >/dev/null 2>&1
     load_config
 
-    local ARGS="-l 127.0.0.1 -l ::1 -p 5353 -f 1.1.1.1:53 -f 8.8.8.8:53 $P_H3 $UPSTREAM_ARGS"
+    # ВНИМАНИЕ: Никаких открытых -f (fallback)! Работаем только через проверенный DoH
+    local ARGS="-l 127.0.0.1 -l ::1 -p 5353 $P_H3 $UPSTREAM_ARGS"
 
     echo "[*] Запуск dnsproxy..."
     $DNSPROXY_BIN $ARGS > "$LOG_FILE" 2>&1 &
@@ -201,7 +236,7 @@ start_dnsproxy() {
         apply_iptables
         echo "[✓] Magisk DNS Crypt успешно запущен и перенаправляет трафик."
     else
-        echo "[!] Ошибка старта dnsproxy. Правила iptables НЕ применены."
+        echo "[!] Ошибка: DoH не заработал. Правила iptables НЕ применены."
         kill -9 "$PID" 2>/dev/null
         rm -f "$PID_FILE"
         clean_iptables
@@ -245,7 +280,6 @@ case "$1" in
         status_dnsproxy
         ;;
     *)
-        # Тумблер: если работает — глушим, если выключен — стартуем
         if pidof dnsproxy >/dev/null 2>&1; then
             stop_dnsproxy
         else
